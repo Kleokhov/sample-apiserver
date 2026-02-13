@@ -21,18 +21,22 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 
 	"github.com/spf13/cobra"
-
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/version"
 	"k8s.io/apiserver/pkg/admission"
+	authn "k8s.io/apiserver/pkg/authentication/authenticator"
+	kuser "k8s.io/apiserver/pkg/authentication/user"
+	authorizerfactory "k8s.io/apiserver/pkg/authorization/authorizerfactory"
 	"k8s.io/apiserver/pkg/endpoints/openapi"
 	genericapiserver "k8s.io/apiserver/pkg/server"
 	genericoptions "k8s.io/apiserver/pkg/server/options"
+	"k8s.io/apiserver/pkg/storage/storagebackend"
 	"k8s.io/apiserver/pkg/util/compatibility"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	basecompatibility "k8s.io/component-base/compatibility"
@@ -89,6 +93,12 @@ func NewWardleServerOptions(out, errOut io.Writer) *WardleServerOptions {
 		StdOut: out,
 		StdErr: errOut,
 	}
+	o.RecommendedOptions.Etcd.StorageConfig.Type = storagebackend.StorageTypeDynamo
+	o.RecommendedOptions.Etcd.StorageConfig.Dynamo.Region = "us-east-1"
+	o.RecommendedOptions.Etcd.StorageConfig.Dynamo.TableName = "wardle"
+	o.RecommendedOptions.Etcd.StorageConfig.Dynamo.Endpoint = "http://127.0.0.1:8000"
+	o.RecommendedOptions.Etcd.EnableWatchCache = false
+	o.RecommendedOptions.Etcd.SkipHealthEndpoints = true
 	o.RecommendedOptions.Etcd.StorageConfig.EncodeVersioner = runtime.NewMultiGroupVersioner(v1alpha1.SchemeGroupVersion, schema.GroupKind{Group: v1alpha1.GroupName})
 	return o
 }
@@ -220,6 +230,22 @@ func (o *WardleServerOptions) Config() (*apiserver.Config, error) {
 	if err := o.RecommendedOptions.ApplyTo(serverConfig); err != nil {
 		return nil, err
 	}
+
+	// DEBUG ONLY: disable authn/authz so you can curl directly with no creds.
+	serverConfig.Config.Authentication.Authenticator = authn.RequestFunc(
+		func(*http.Request) (*authn.Response, bool, error) {
+			return &authn.Response{
+				User: &kuser.DefaultInfo{
+					Name:   "debug",
+					UID:    "debug",
+					Groups: []string{"system:masters"},
+				},
+			}, true, nil
+		},
+	)
+
+	aa := authorizerfactory.NewAlwaysAllowAuthorizer()
+	serverConfig.Config.Authorization.Authorizer = aa
 
 	config := &apiserver.Config{
 		GenericConfig: serverConfig,
